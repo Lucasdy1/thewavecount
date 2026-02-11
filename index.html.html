@@ -1,0 +1,1342 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>The Wave Count - Trading Portfolio</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+    <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+    <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chartjs-plugin-datalabels@2"></script>
+    <style>
+        body {
+            margin: 0;
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
+            background: linear-gradient(135deg, #2d5f5d 0%, #1a3938 50%, #0f2424 100%);
+            min-height: 100vh;
+        }
+        
+        .glass-card {
+            background: rgba(255, 255, 255, 0.05);
+            backdrop-filter: blur(10px);
+            border: 1px solid rgba(255, 255, 255, 0.1);
+            border-radius: 16px;
+            padding: 24px;
+        }
+        
+        .ticker-tape {
+            background: rgba(0, 0, 0, 0.2);
+            padding: 12px 0;
+            overflow: hidden;
+            white-space: nowrap;
+        }
+        
+        .ticker-content {
+            display: inline-block;
+            animation: scroll 30s linear infinite;
+        }
+        
+        @keyframes scroll {
+            0% { transform: translateX(0); }
+            100% { transform: translateX(-50%); }
+        }
+        
+        .btn-primary {
+            background: linear-gradient(135deg, #d4f4dd 0%, #b8e6c4 100%);
+            color: #1a3938;
+            font-weight: 600;
+            padding: 12px 32px;
+            border-radius: 24px;
+            border: none;
+            cursor: pointer;
+            transition: transform 0.2s;
+        }
+        
+        .btn-primary:hover {
+            transform: scale(1.05);
+        }
+        
+        .btn-secondary {
+            background: rgba(255, 255, 255, 0.1);
+            color: white;
+            font-weight: 600;
+            padding: 12px 32px;
+            border-radius: 24px;
+            border: 1px solid rgba(255, 255, 255, 0.2);
+            cursor: pointer;
+            transition: all 0.2s;
+        }
+        
+        .btn-secondary:hover {
+            background: rgba(255, 255, 255, 0.15);
+        }
+        
+        .stat-card {
+            background: rgba(255, 255, 255, 0.03);
+            border: 1px solid rgba(255, 255, 255, 0.1);
+            border-radius: 12px;
+            padding: 20px;
+        }
+        
+        .positive { color: #4ade80; }
+        .negative { color: #f87171; }
+    </style>
+</head>
+<body>
+    <div id="root"></div>
+
+    <script type="text/babel">
+        const { useState, useEffect, useRef } = React;
+
+        // ===== Backend URL =====
+        const BACKEND_URL = 'https://wavecount-api.vercel.app';
+        // =======================
+
+        // Stock price API helper - uses custom backend to avoid CORS
+        const fetchStockPrice = async (ticker) => {
+            try {
+                console.log(`Fetching price for ${ticker} from backend...`);
+                const response = await fetch(`${BACKEND_URL}/api/stocks?ticker=${ticker}`);
+                
+                if (!response.ok) {
+                    throw new Error(`HTTP ${response.status}`);
+                }
+                
+                const data = await response.json();
+                
+                if (data.price) {
+                    console.log(`✓ Fetched ${ticker}: $${data.price}`);
+                    return data.price;
+                }
+            } catch (error) {
+                console.error(`✗ Error fetching ${ticker}:`, error);
+            }
+            
+            return null;
+        };
+
+        // Fetch historical prices for a ticker from a start date
+        const fetchHistoricalData = async (ticker, fromDate) => {
+            try {
+                const response = await fetch(`${BACKEND_URL}/api/stocks?history=1&ticker=${ticker}&from=${fromDate}`);
+                const data = await response.json();
+                return data.history || [];
+            } catch (e) {
+                console.error(`History fetch failed for ${ticker}:`, e);
+                return [];
+            }
+        };
+
+        // Fetch multiple stock prices at once
+        const fetchMultipleStockPrices = async (tickers) => {
+            try {
+                console.log(`Fetching prices for: ${tickers.join(', ')}`);
+                const response = await fetch(`${BACKEND_URL}/api/stocks?tickers=${tickers.join(',')}`);
+                if (!response.ok) throw new Error(`HTTP ${response.status}`);
+                const data = await response.json();
+                if (data.prices) {
+                    console.log('✓ Fetched prices:', data.prices);
+                    return data.prices;
+                }
+            } catch (error) {
+                console.error('✗ Error fetching multiple prices:', error);
+            }
+            return {};
+        };
+
+        // Fetch live market data for ticker tape
+        const fetchMarketData = async () => {
+            const symbols = ['PYPL', 'AAPL', 'MSFT', 'TSLA', 'AMZN', 'GOOGL'];
+            
+            try {
+                // Fetch all prices in one request (faster!)
+                const prices = await fetchMultipleStockPrices(symbols);
+                
+                const data = symbols.map(symbol => {
+                    const price = prices[symbol];
+                    if (price) {
+                        return {
+                            symbol,
+                            price,
+                            change: 0,
+                            changePercent: 0
+                        };
+                    }
+                    return null;
+                }).filter(Boolean);
+                
+                // Return fetched data or fallback
+                return data.length > 0 ? data : getFallbackMarketData();
+                
+            } catch (error) {
+                console.error('Error fetching market data:', error);
+                return getFallbackMarketData();
+            }
+        };
+
+        // Fallback data when API is unavailable
+        const getFallbackMarketData = () => [
+            { symbol: 'PYPL', price: 59.97, change: -0.07, changePercent: -0.12 },
+            { symbol: 'AAPL', price: 273.40, change: -0.41, changePercent: -0.15 },
+            { symbol: 'MSFT', price: 487.71, change: -0.31, changePercent: -0.06 },
+            { symbol: 'TSLA', price: 475.19, change: -10.21, changePercent: -2.10 },
+            { symbol: 'AMZN', price: 234.67, change: 0.14, changePercent: 0.05 },
+            { symbol: 'GOOGL', price: 313.51, change: -0.58, changePercent: -0.18 },
+        ];
+
+        function TickerTape() {
+            const [marketData, setMarketData] = useState([]);
+
+            useEffect(() => {
+                const updateMarketData = async () => {
+                    const data = await fetchMarketData();
+                    setMarketData(data);
+                };
+
+                updateMarketData(); // Initial load
+                const interval = setInterval(updateMarketData, 30000); // Update every 30 seconds
+
+                return () => clearInterval(interval);
+            }, []);
+
+            const doubledData = [...marketData, ...marketData];
+
+            if (marketData.length === 0) {
+                return (
+                    <div className="ticker-tape">
+                        <div className="ticker-content">
+                            <span className="inline-block mx-6 text-white">Loading market data...</span>
+                        </div>
+                    </div>
+                );
+            }
+
+            return (
+                <div className="ticker-tape">
+                    <div className="ticker-content">
+                        {doubledData.map((stock, idx) => (
+                            <span key={idx} className="inline-block mx-6 text-white">
+                                <span className="font-semibold">{stock.symbol}</span>
+                                <span className="mx-2">•</span>
+                                <span>{stock.price.toFixed(2)}°</span>
+                                <span className={`ml-2 ${stock.change >= 0 ? 'positive' : 'negative'}`}>
+                                    {stock.change >= 0 ? '+' : ''}{stock.change.toFixed(2)} ({stock.changePercent >= 0 ? '+' : ''}{stock.changePercent.toFixed(2)}%)
+                                </span>
+                            </span>
+                        ))}
+                    </div>
+                </div>
+            );
+        }
+
+        function HomePage({ onNavigate }) {
+            return (
+                <div className="min-h-screen flex flex-col">
+                    <TickerTape />
+                    
+                    <div className="flex-1 flex items-center justify-center px-6">
+                        <div className="max-w-4xl w-full">
+                            <div className="glass-card text-center">
+                                <h1 className="text-5xl font-bold text-white mb-6">
+                                    The Wave Count
+                                </h1>
+                                
+                                <h2 className="text-3xl font-semibold text-white mb-4">
+                                    Transparent trade tracking.
+                                </h2>
+                                
+                                <p className="text-xl text-gray-300 mb-8">
+                                    Public performance overview. Not financial advice.
+                                </p>
+                                
+                                <div className="flex gap-4 justify-center">
+                                    <button onClick={() => onNavigate('dashboard')} className="btn-primary">
+                                        Open Dashboard
+                                    </button>
+                                    <button className="btn-secondary">
+                                        Powered by TradingView
+                                    </button>
+                                </div>
+                            </div>
+                            
+                            <div className="mt-6 text-center text-gray-400 text-sm">
+                                Live prices (auto-updating)<br/>
+                                <span className="text-gray-500">Market data via Yahoo Finance</span>
+                            </div>
+                        </div>
+                    </div>
+                    
+                    <div className="text-center py-6 text-gray-400 text-sm">
+                        © 2026 TheWaveCount — For transparency only. Not financial advice.
+                    </div>
+                </div>
+            );
+        }
+
+        function Dashboard({ onNavigate, trades, onAddTrade, onUpdatePrices, onDeleteTrade, onCloseTrade }) {
+            const [showAddModal, setShowAddModal] = useState(false);
+            const [adminPassword, setAdminPassword] = useState('');
+            const [isAdmin, setIsAdmin] = useState(false);
+            const [expandedTicker, setExpandedTicker] = useState(null);
+            const [deleteConfirm, setDeleteConfirm] = useState(null);
+            const [closeConfirm, setCloseConfirm] = useState(null); // {index, tranche}
+            const [closePercent, setClosePercent] = useState(100);
+            const [activeTab, setActiveTab] = useState('open');
+            const performanceChartRef = useRef(null);
+            const donutChartRef = useRef(null);
+            const performanceChartInstance = useRef(null);
+            const donutChartInstance = useRef(null);
+
+            // Update prices every 30 seconds
+            useEffect(() => {
+                const updatePrices = async () => {
+                    const uniqueTickers = [...new Set(trades.map(t => t.ticker))];
+                    
+                    if (uniqueTickers.length === 0) return;
+                    
+                    console.log('🔄 Fetching prices for:', uniqueTickers.join(', '));
+                    
+                    // Use batch endpoint for efficiency
+                    const updates = await fetchMultipleStockPrices(uniqueTickers);
+                    
+                    if (Object.keys(updates).length > 0) {
+                        console.log('✅ Price updates:', updates);
+                        onUpdatePrices(updates);
+                    } else {
+                        console.warn('⚠️ No price updates received - backend may not be configured');
+                    }
+                };
+
+                // Initial update after 2 seconds (let the page load first)
+                const initialTimeout = setTimeout(updatePrices, 2000);
+                
+                // Then update every 30 seconds
+                const interval = setInterval(updatePrices, 30000);
+
+                return () => {
+                    clearTimeout(initialTimeout);
+                    clearInterval(interval);
+                };
+            }, [trades.map(t => t.ticker).join(',')]); // Re-run when tickers change
+
+            // Group trades by ticker and calculate aggregates
+            const groupedTrades = trades.reduce((acc, trade) => {
+                if (!acc[trade.ticker]) {
+                    acc[trade.ticker] = {
+                        ticker: trade.ticker,
+                        name: trade.name.split('•')[0].trim(),
+                        tranches: [],
+                        totalShares: 0,
+                        positionValue: 0, // shares × entry price = invested €
+                        weightedEntry: 0,
+                        avgTarget: 0,
+                        currentPrice: trade.currentPrice
+                    };
+                }
+                
+                acc[trade.ticker].tranches.push(trade);
+                acc[trade.ticker].totalShares += (trade.shares || 1);
+                acc[trade.ticker].positionValue += trade.avgEntry * (trade.shares || 1);
+                acc[trade.ticker].weightedEntry += trade.avgEntry * (trade.shares || 1);
+                
+                if (trade.target) {
+                    acc[trade.ticker].avgTarget += trade.target;
+                }
+                
+                return acc;
+            }, {});
+
+            // Calculate final values
+            Object.values(groupedTrades).forEach(group => {
+                group.weightedEntry = group.weightedEntry / group.totalShares;
+                group.avgTarget = group.avgTarget / group.tranches.filter(t => t.target).length || 0;
+                group.currentReturn = ((group.currentPrice - group.weightedEntry) / group.weightedEntry) * 100;
+            });
+
+            const openTrades = trades.filter(t => t.status === 'OPEN');
+            const closedTrades = trades.filter(t => t.status === 'CLOSED');
+            
+            const avgOpenProfit = openTrades.length > 0
+                ? openTrades.reduce((sum, t) => sum + t.currentReturn, 0) / openTrades.length
+                : 0;
+                
+            const avgClosedProfit = closedTrades.length > 0
+                ? closedTrades.reduce((sum, t) => sum + t.realizedReturn, 0) / closedTrades.length
+                : 0;
+
+            // Calculate best performer from GROUPED trades (not individual tranches)
+            const openGroups = Object.values(groupedTrades).filter(g => g.tranches.some(t => t.status === 'OPEN'));
+            const bestPerformer = openGroups.length > 0
+                ? openGroups.reduce((best, group) => group.currentReturn > best.currentReturn ? group : best, openGroups[0])
+                : null;
+
+            // Donut Chart
+            useEffect(() => {
+                if (donutChartRef.current && Object.keys(groupedTrades).length > 0) {
+                    if (donutChartInstance.current) {
+                        donutChartInstance.current.destroy();
+                    }
+
+                    const ctx = donutChartRef.current.getContext('2d');
+                    // Only show OPEN positions in allocation chart
+                    const groups = Object.values(groupedTrades).filter(g => g.tranches.some(t => t.status === 'OPEN'));
+                    
+                    const colors = [
+                        '#4ade80', // emerald
+                        '#60a5fa', // blue
+                        '#f59e0b', // amber
+                        '#ec4899', // pink
+                        '#8b5cf6', // purple
+                        '#06b6d4', // cyan
+                    ];
+
+                    donutChartInstance.current = new Chart(ctx, {
+                        type: 'doughnut',
+                        data: {
+                            labels: groups.map(g => g.ticker),
+                            datasets: [{
+                                data: groups.map(g => g.positionValue),
+                                backgroundColor: colors.slice(0, groups.length),
+                                borderWidth: 0
+                            }]
+                        },
+                        options: {
+                            responsive: true,
+                            maintainAspectRatio: true,
+                            plugins: {
+                                legend: { display: false },
+                                tooltip: {
+                                    callbacks: {
+                                        label: (context) => {
+                                            const total = context.dataset.data.reduce((a, b) => a + b, 0);
+                                            const percentage = ((context.parsed / total) * 100).toFixed(1);
+                                            return `${context.label}: ${percentage}%`;
+                                        }
+                                    }
+                                }
+                            },
+                            cutout: '65%'
+                        }
+                    });
+                }
+
+                return () => {
+                    if (donutChartInstance.current) {
+                        donutChartInstance.current.destroy();
+                    }
+                };
+            }, [groupedTrades]);
+
+            // Performance Chart - uses REAL historical prices from backend
+            useEffect(() => {
+                if (!performanceChartRef.current || openTrades.length === 0) return;
+
+                const buildChart = async () => {
+                    if (performanceChartInstance.current) {
+                        performanceChartInstance.current.destroy();
+                    }
+                    const ctx = performanceChartRef.current.getContext('2d');
+
+                    // Find earliest entry date
+                    const earliestDate = openTrades.reduce((earliest, t) => {
+                        const d = new Date(t.entryDate);
+                        return d < earliest ? d : earliest;
+                    }, new Date());
+                    const fromDate = earliestDate.toISOString().split('T')[0];
+
+                    // Fetch real historical data for each unique ticker
+                    const uniqueTickers = [...new Set(openTrades.map(t => t.ticker))];
+                    const historyMap = {};
+                    for (const ticker of uniqueTickers) {
+                        historyMap[ticker] = await fetchHistoricalData(ticker, fromDate);
+                    }
+
+                    // Build combined portfolio return per date
+                    const allDates = [...new Set(
+                        Object.values(historyMap).flat().map(d => d.date)
+                    )].sort();
+
+                    const validDates = [];
+                    const portfolioReturns = [];
+
+                    allDates.forEach(date => {
+                        let totalCost = 0;
+                        let totalValue = 0;
+                        openTrades.forEach(trade => {
+                            if (new Date(date) < new Date(trade.entryDate)) return;
+                            const history = historyMap[trade.ticker] || [];
+                            const dayData = history.find(h => h.date === date);
+                            if (!dayData) return;
+                            const shares = trade.shares || 1;
+                            totalCost += trade.avgEntry * shares;
+                            totalValue += dayData.price * shares;
+                        });
+                        if (totalCost === 0) return;
+                        validDates.push(date);
+                        portfolioReturns.push(((totalValue - totalCost) / totalCost) * 100);
+                    });
+
+                    // Label only first day of each month
+                    const monthNames = ['Jan', 'Feb', 'Mär', 'Apr', 'Mai', 'Jun', 'Jul', 'Aug', 'Sep', 'Okt', 'Nov', 'Dez'];
+                    let lastMonth = -1;
+                    const labels = validDates.map(date => {
+                        const d = new Date(date);
+                        if (d.getMonth() !== lastMonth) {
+                            lastMonth = d.getMonth();
+                            return `${monthNames[d.getMonth()]} '${d.getFullYear().toString().slice(-2)}`;
+                        }
+                        return '';
+                    });
+
+                    const lastReturn = portfolioReturns[portfolioReturns.length - 1] || 0;
+                    const lineColor = lastReturn >= 0 ? '#4ade80' : '#f87171';
+                    const fillColor = lastReturn >= 0 ? 'rgba(74,222,128,0.08)' : 'rgba(248,113,113,0.08)';
+
+                    performanceChartInstance.current = new Chart(ctx, {
+                        type: 'line',
+                        data: {
+                            labels,
+                            datasets: [{
+                                label: 'Portfolio Return',
+                                data: portfolioReturns,
+                                borderColor: lineColor,
+                                backgroundColor: fillColor,
+                                fill: true,
+                                tension: 0.2,
+                                borderWidth: 2,
+                                pointRadius: 0,
+                                pointHoverRadius: 4,
+                            }]
+                        },
+                        options: {
+                            responsive: true,
+                            maintainAspectRatio: false,
+                            interaction: { intersect: false, mode: 'index' },
+                            plugins: {
+                                legend: { display: false },
+                                tooltip: {
+                                    callbacks: {
+                                        label: ctx => ` ${ctx.parsed.y >= 0 ? '+' : ''}${ctx.parsed.y.toFixed(2)}%`,
+                                        title: ctxArr => validDates[ctxArr[0].dataIndex] || ''
+                                    }
+                                }
+                            },
+                            scales: {
+                                y: {
+                                    ticks: { color: '#9ca3af', callback: v => `${v >= 0 ? '+' : ''}${parseFloat(v).toFixed(1)}%` },
+                                    grid: { color: 'rgba(255,255,255,0.05)' }
+                                },
+                                x: {
+                                    ticks: { color: '#9ca3af', maxRotation: 0, autoSkip: false },
+                                    grid: { display: false }
+                                }
+                            }
+                        }
+                    });
+                };
+
+                buildChart();
+
+                return () => {
+                    if (performanceChartInstance.current) performanceChartInstance.current.destroy();
+                };
+            }, [openTrades.map(t => t.ticker + t.currentPrice).join(',')]);
+
+            const handleAdminLogin = () => {
+                if (adminPassword === 'wave2025') {
+                    setIsAdmin(true);
+                    setAdminPassword('');
+                    setShowAddModal(true);
+                } else {
+                    alert('Wrong password!');
+                }
+            };
+
+            const colors = [
+                '#4ade80', '#60a5fa', '#f59e0b', '#ec4899', '#8b5cf6', '#06b6d4'
+            ];
+
+            return (
+                <div className="min-h-screen p-6">
+                    <TickerTape />
+                    
+                    <div className="max-w-7xl mx-auto mt-6">
+                        <div className="flex justify-between items-center mb-8">
+                            <h1 className="text-4xl font-bold text-white">The Wave Count</h1>
+                            <div className="flex gap-3">
+                                <button onClick={() => onNavigate('home')} className="btn-secondary">
+                                    Home
+                                </button>
+                                <button className="btn-primary">
+                                    Dashboard
+                                </button>
+                                {!isAdmin && (
+                                    <button onClick={() => setShowAddModal(true)} className="btn-secondary">
+                                        + Add Trade
+                                    </button>
+                                )}
+                            </div>
+                        </div>
+
+                        {/* Stats Cards */}
+                        <div className="grid grid-cols-1 md:grid-cols-3 gap-6 mb-6">
+                            <div className="stat-card">
+                                <div className="text-gray-400 text-sm mb-2">Avg. Return (open)</div>
+                                <div className={`text-4xl font-bold ${avgOpenProfit >= 0 ? 'positive' : 'negative'}`}>
+                                    {avgOpenProfit >= 0 ? '+' : ''}{avgOpenProfit.toFixed(2)}%
+                                </div>
+                                <div className="text-gray-500 text-sm mt-2">Average of all open positions</div>
+                            </div>
+
+                            <div className="stat-card">
+                                <div className="text-gray-400 text-sm mb-2">Best Performer</div>
+                                <div className="text-4xl font-bold text-white">
+                                    {bestPerformer ? bestPerformer.ticker : 'N/A'}
+                                </div>
+                                <div className={`text-sm mt-2 ${bestPerformer && bestPerformer.currentReturn >= 0 ? 'positive' : 'negative'}`}>
+                                    Currently {bestPerformer ? `${bestPerformer.currentReturn >= 0 ? '+' : ''}${bestPerformer.currentReturn.toFixed(2)}%` : 'N/A'}
+                                </div>
+                            </div>
+
+                            <div className="stat-card">
+                                <div className="text-gray-400 text-sm mb-2">Avg. Return (closed)</div>
+                                <div className={`text-4xl font-bold ${avgClosedProfit >= 0 ? 'positive' : 'negative'}`}>
+                                    {avgClosedProfit >= 0 ? '+' : ''}{avgClosedProfit.toFixed(2)}%
+                                </div>
+                                <div className="text-gray-500 text-sm mt-2">Average of all closed positions</div>
+                            </div>
+                        </div>
+
+                        {/* Main Dashboard Grid */}
+                        <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 mb-6">
+                            {/* Portfolio Allocation with Donut */}
+                            <div className="glass-card">
+                                <h3 className="text-white text-xl font-semibold mb-1">Portfolio Allocation</h3>
+                                <p className="text-gray-400 text-sm mb-4">Weighted by invested capital</p>
+                                
+                                {(() => {
+                                    const openGroups = Object.values(groupedTrades).filter(g => g.tranches.some(t => t.status === 'OPEN'));
+                                    const total = openGroups.reduce((sum, g) => sum + g.positionValue, 0);
+                                    const sorted = [...openGroups].sort((a, b) => b.positionValue - a.positionValue);
+                                    const top5 = sorted.slice(0, 5);
+                                    const rest = sorted.slice(5);
+                                    const [showAll, setShowAll] = React.useState(false);
+                                    const visible = showAll ? sorted : top5;
+
+                                    return (
+                                        <div className="flex gap-4">
+                                            {/* Donut */}
+                                            <div style={{ width: '140px', height: '140px', flexShrink: 0 }}>
+                                                <canvas ref={donutChartRef}></canvas>
+                                            </div>
+                                            {/* List */}
+                                            <div className="flex-1 min-w-0">
+                                                {visible.map((group, idx) => {
+                                                    const pct = ((group.positionValue / total) * 100).toFixed(1);
+                                                    const colorIdx = sorted.indexOf(group);
+                                                    return (
+                                                        <div key={idx} className="flex justify-between items-center py-1 border-b border-white/5">
+                                                            <div className="flex items-center gap-2 min-w-0">
+                                                                <div className="w-2 h-2 rounded-full flex-shrink-0" style={{ backgroundColor: colors[colorIdx % colors.length] }}></div>
+                                                                <span className="text-white font-semibold text-sm">{group.ticker}</span>
+                                                                <span className="text-gray-500 text-xs truncate hidden sm:block">{group.name}</span>
+                                                            </div>
+                                                            <span className="text-white text-sm font-semibold ml-2 flex-shrink-0">{pct}%</span>
+                                                        </div>
+                                                    );
+                                                })}
+                                                {rest.length > 0 && (
+                                                    <button
+                                                        onClick={() => setShowAll(!showAll)}
+                                                        className="mt-2 text-emerald-400 text-xs hover:text-emerald-300 transition-colors flex items-center gap-1"
+                                                    >
+                                                        {showAll ? '▲ Show less' : `▼ +${rest.length} more`}
+                                                    </button>
+                                                )}
+                                            </div>
+                                        </div>
+                                    );
+                                })()}
+                            </div>
+
+                            {/* Performance Chart */}
+                            <div className="glass-card">
+                                <div className="flex justify-between items-center mb-4">
+                                    <h3 className="text-white text-xl font-semibold">Performance</h3>
+                                    <span className="text-emerald-400 text-sm font-semibold">
+                                        Now: {avgOpenProfit >= 0 ? "+" : ""}{avgOpenProfit.toFixed(2)}%
+                                    </span>
+                                </div>
+                                <p className="text-gray-400 text-sm mb-6">Equity curve based on real price data</p>
+                                
+                                <div style={{ height: '200px' }}>
+                                    <canvas ref={performanceChartRef}></canvas>
+                                </div>
+                            </div>
+                        </div>
+
+                        {/* Positions Table with Expandable Tranches */}
+                        <div className="glass-card">
+                            <div className="flex justify-between items-center mb-6">
+                                <div>
+                                    <h3 className="text-white text-xl font-semibold">Portfolio Positions</h3>
+                                    <p className="text-gray-400 text-sm">Click a row to expand individual entries</p>
+                                </div>
+                                <div className="flex gap-2">
+                                    <button 
+                                        onClick={() => setActiveTab('open')}
+                                        className={`px-4 py-2 rounded-lg font-semibold text-sm transition-all ${
+                                            activeTab === 'open' 
+                                                ? 'bg-emerald-500/20 text-emerald-400 border border-emerald-500/30' 
+                                                : 'bg-white/5 text-gray-400 border border-white/10 hover:bg-white/10'
+                                        }`}
+                                    >
+                                        Open Positions
+                                    </button>
+                                    <button 
+                                        onClick={() => setActiveTab('closed')}
+                                        className={`px-4 py-2 rounded-lg font-semibold text-sm transition-all ${
+                                            activeTab === 'closed' 
+                                                ? 'bg-emerald-500/20 text-emerald-400 border border-emerald-500/30' 
+                                                : 'bg-white/5 text-gray-400 border border-white/10 hover:bg-white/10'
+                                        }`}
+                                    >
+                                        Closed Positions
+                                    </button>
+                                </div>
+                            </div>
+
+                            <div className="overflow-x-auto">
+                                <table className="w-full">
+                                    <thead>
+                                        <tr className="text-gray-400 text-sm border-b border-gray-700">
+                                            <th className="text-left py-3 px-4">ASSET</th>
+                                            <th className="text-left py-3 px-4">DIRECTION</th>
+                                            <th className="text-left py-3 px-4">AVG ENTRY</th>
+                                            <th className="text-left py-3 px-4">
+                                                {activeTab === 'open' ? 'AVG TARGET' : 'EXIT PRICE'}
+                                            </th>
+                                            <th className="text-left py-3 px-4">
+                                                {activeTab === 'open' ? 'CURRENT' : 'EXIT DATE'}
+                                            </th>
+                                            <th className="text-right py-3 px-4">PERF.</th>
+                                        </tr>
+                                    </thead>
+                                    <tbody>
+                                        {Object.values(groupedTrades).filter(g => 
+                                            g.tranches.some(t => t.status === activeTab.toUpperCase())
+                                        ).map((group, idx) => (
+                                            <React.Fragment key={idx}>
+                                                <tr 
+                                                    className="border-b border-gray-800 hover:bg-white/5 transition-colors cursor-pointer"
+                                                    onClick={() => setExpandedTicker(expandedTicker === group.ticker ? null : group.ticker)}
+                                                >
+                                                    <td className="py-4 px-4">
+                                                        <div className="flex items-center gap-2">
+                                                            <span className="text-gray-400">{expandedTicker === group.ticker ? '▼' : '▶'}</span>
+                                                            <div>
+                                                                <div className="text-white font-semibold">{group.ticker}</div>
+                                                                <div className="text-gray-500 text-sm">{group.name}</div>
+                                                            </div>
+                                                        </div>
+                                                    </td>
+                                                    <td className="py-4 px-4">
+                                                        <span className="bg-emerald-500/20 text-emerald-400 px-3 py-1 rounded-full text-sm font-semibold">
+                                                            LONG
+                                                        </span>
+                                                    </td>
+                                                    <td className="py-4 px-4 text-white">${group.weightedEntry.toFixed(2)}</td>
+                                                    <td className="py-4 px-4 text-white">
+                                                        {activeTab === 'open' 
+                                                            ? (group.avgTarget > 0 ? `$${group.avgTarget.toFixed(2)}` : '-')
+                                                            : (group.tranches[0].exitPrice ? `$${group.tranches[0].exitPrice.toFixed(2)}` : '-')
+                                                        }
+                                                    </td>
+                                                    <td className="py-4 px-4 text-white">
+                                                        {activeTab === 'open' 
+                                                            ? `$${group.currentPrice.toFixed(2)}`
+                                                            : (group.tranches[0].exitDate || '-')
+                                                        }
+                                                    </td>
+                                                    <td className="py-4 px-4 text-right">
+                                                        <span className={`font-bold ${group.currentReturn >= 0 ? 'positive' : 'negative'}`}>
+                                                            {group.currentReturn >= 0 ? '+' : ''}{group.currentReturn.toFixed(2)}%
+                                                        </span>
+                                                    </td>
+                                                </tr>
+                                                
+                                                {/* Expanded Tranches */}
+                                                {expandedTicker === group.ticker && group.tranches
+                                                    .filter(t => t.status === activeTab.toUpperCase())
+                                                    .map((tranche, tIdx) => (
+                                                    <tr key={`${idx}-${tIdx}`} className="bg-white/5 border-b border-gray-800">
+                                                        <td className="py-3 px-4 pl-12">
+                                                            <div className="text-gray-400 text-sm">
+                                                                Lot {tIdx + 1}
+                                                            </div>
+                                                        </td>
+                                                        <td className="py-3 px-4">
+                                                            <span className="text-gray-400 text-sm">
+                                                                {tranche.entryDate || 'N/A'}
+                                                            </span>
+                                                        </td>
+                                                        <td className="py-3 px-4 text-gray-300 text-sm">
+                                                            ${tranche.avgEntry.toFixed(2)}
+                                                        </td>
+                                                        <td className="py-3 px-4 text-gray-300 text-sm">
+                                                            {tranche.target ? `$${tranche.target.toFixed(2)}` : '-'}
+                                                        </td>
+                                                        <td className="py-3 px-4 text-gray-300 text-sm">
+                                                            Shares: {tranche.shares || 1}
+                                                        </td>
+                                                        <td className="py-3 px-4 text-right">
+                                                            <div className="flex items-center justify-end gap-3">
+                                                                <span className={`text-sm font-semibold ${tranche.currentReturn >= 0 ? 'positive' : 'negative'}`}>
+                                                                    {tranche.currentReturn >= 0 ? '+' : ''}{tranche.currentReturn.toFixed(2)}%
+                                                                </span>
+                                                                {isAdmin && activeTab === 'open' && (
+                                                                    <button
+                                                                        onClick={(e) => {
+                                                                            e.stopPropagation();
+                                                                            setClosePercent(100);
+                                                                            setCloseConfirm({ index: trades.indexOf(tranche), tranche });
+                                                                        }}
+                                                                        className="text-yellow-400 hover:text-yellow-300 text-xs px-2 py-1 rounded hover:bg-yellow-500/10 transition-colors font-bold"
+                                                                        title="Close position"
+                                                                    >
+                                                                        ✓ Close
+                                                                    </button>
+                                                                )}
+                                                                {isAdmin && (
+                                                                <button
+                                                                    onClick={(e) => {
+                                                                        e.stopPropagation();
+                                                                        setDeleteConfirm(trades.indexOf(tranche));
+                                                                    }}
+                                                                    className="text-red-400 hover:text-red-300 text-sm px-2 py-1 rounded hover:bg-red-500/10 transition-colors"
+                                                                    title="Delete trade"
+                                                                >
+                                                                    🗑️
+                                                                </button>
+                                                                )}
+                                                            </div>
+                                                        </td>
+                                                    </tr>
+                                                ))}
+                                            </React.Fragment>
+                                        ))}
+                                    </tbody>
+                                </table>
+                            </div>
+                        </div>
+                    </div>
+
+                    {/* Add Trade Modal */}
+                    {showAddModal && (
+                        <AddTradeModal
+                            isAdmin={isAdmin}
+                            onClose={() => {
+                                setShowAddModal(false);
+                                setAdminPassword('');
+                            }}
+                            onSubmit={(trade) => {
+                                onAddTrade(trade);
+                                // Don't close modal - let user add multiple trades
+                            }}
+                            adminPassword={adminPassword}
+                            setAdminPassword={setAdminPassword}
+                            onAdminLogin={handleAdminLogin}
+                        />
+                    )}
+
+                    {/* Delete Confirmation Modal */}
+                    {deleteConfirm !== null && (
+                        <div className="fixed inset-0 bg-black/50 backdrop-blur-sm flex items-center justify-center z-50">
+                            <div className="glass-card max-w-md w-full mx-4">
+                                <h2 className="text-2xl font-bold text-white mb-4">Delete Trade?</h2>
+                                <p className="text-gray-300 mb-6">
+                                    Really delete this trade? This action cannot be undone.
+                                </p>
+                                <div className="bg-white/5 rounded-lg p-4 mb-6">
+                                    <div className="text-white font-semibold">{trades[deleteConfirm].ticker}</div>
+                                    <div className="text-gray-400 text-sm">Entry: ${trades[deleteConfirm].avgEntry.toFixed(2)} • {trades[deleteConfirm].entryDate}</div>
+                                </div>
+                                <div className="flex gap-3">
+                                    <button 
+                                        onClick={() => {
+                                            onDeleteTrade(deleteConfirm);
+                                            setDeleteConfirm(null);
+                                        }} 
+                                        className="flex-1 bg-red-500 hover:bg-red-600 text-white font-semibold py-3 px-6 rounded-lg transition-colors"
+                                    >
+                                        Delete
+                                    </button>
+                                    <button 
+                                        onClick={() => setDeleteConfirm(null)} 
+                                        className="btn-secondary flex-1"
+                                    >
+                                        Cancel
+                                    </button>
+                                </div>
+                            </div>
+                        </div>
+                    )}
+
+                    {/* Partial Close Modal */}
+                    {closeConfirm !== null && (
+                        <div className="fixed inset-0 bg-black/50 backdrop-blur-sm flex items-center justify-center z-50">
+                            <div className="glass-card max-w-md w-full mx-4">
+                                <h2 className="text-2xl font-bold text-white mb-2">Close Position</h2>
+                                <p className="text-gray-400 text-sm mb-4">How much of this position do you want to close?</p>
+
+                                <div className="bg-white/5 rounded-lg p-4 mb-6">
+                                    <div className="text-white font-semibold text-lg">{closeConfirm.tranche.ticker}</div>
+                                    <div className="text-gray-400 text-sm">
+                                        Entry: ${closeConfirm.tranche.avgEntry.toFixed(2)} • 
+                                        Current: ${closeConfirm.tranche.currentPrice?.toFixed(2)} • 
+                                        {closeConfirm.tranche.shares} shares
+                                    </div>
+                                    <div className={`text-sm font-semibold mt-1 ${closeConfirm.tranche.currentReturn >= 0 ? 'text-emerald-400' : 'text-red-400'}`}>
+                                        {closeConfirm.tranche.currentReturn >= 0 ? '+' : ''}{closeConfirm.tranche.currentReturn?.toFixed(2)}%
+                                    </div>
+                                </div>
+
+                                {/* % Buttons */}
+                                <div className="grid grid-cols-4 gap-2 mb-4">
+                                    {[25, 50, 75, 100].map(pct => (
+                                        <button
+                                            key={pct}
+                                            onClick={() => setClosePercent(pct)}
+                                            className={`py-2 rounded-lg font-semibold text-sm transition-all ${
+                                                closePercent === pct
+                                                    ? 'bg-emerald-500 text-white'
+                                                    : 'bg-white/10 text-gray-300 hover:bg-white/20'
+                                            }`}
+                                        >
+                                            {pct}%
+                                        </button>
+                                    ))}
+                                </div>
+
+                                {/* Custom % input */}
+                                <div className="mb-6">
+                                    <label className="text-gray-400 text-sm mb-2 block">Custom:</label>
+                                    <div className="flex items-center gap-3">
+                                        <input
+                                            type="range"
+                                            min="1" max="100"
+                                            value={closePercent}
+                                            onChange={e => setClosePercent(parseInt(e.target.value))}
+                                            className="flex-1"
+                                        />
+                                        <span className="text-white font-bold text-lg w-16 text-right">{closePercent}%</span>
+                                    </div>
+                                    <div className="text-gray-500 text-xs mt-1">
+                                        = {Math.round((closeConfirm.tranche.shares || 1) * closePercent / 100)} of {closeConfirm.tranche.shares || 1} shares
+                                    </div>
+                                </div>
+
+                                <div className="flex gap-3">
+                                    <button
+                                        onClick={() => {
+                                            onCloseTrade(closeConfirm.index, closePercent);
+                                            setCloseConfirm(null);
+                                        }}
+                                        className="flex-1 bg-emerald-500 hover:bg-emerald-600 text-white font-semibold py-3 px-6 rounded-lg transition-colors"
+                                    >
+                                        {closePercent}% close
+                                    </button>
+                                    <button
+                                        onClick={() => setCloseConfirm(null)}
+                                        className="btn-secondary flex-1"
+                                    >
+                                        Cancel
+                                    </button>
+                                </div>
+                            </div>
+                        </div>
+                    )}
+                </div>
+            );
+        }
+
+        function AddTradeModal({ isAdmin, onClose, onSubmit, adminPassword, setAdminPassword, onAdminLogin }) {
+            const [formData, setFormData] = useState({
+                ticker: '',
+                name: '',
+                direction: 'LONG',
+                avgEntry: '',
+                target: '',
+                currentPrice: '',
+                shares: '1',
+                entryDate: new Date().toISOString().split('T')[0],
+                status: 'OPEN'
+            });
+            const [isLoading, setIsLoading] = useState(false);
+
+            const handleSubmit = async (e) => {
+                e.preventDefault();
+                setIsLoading(true);
+                
+                // Get current price - try to fetch if empty, but make it required
+                let currentPrice = parseFloat(formData.currentPrice);
+                
+                if (!currentPrice) {
+                    console.log(`Trying to fetch price for ${formData.ticker}...`);
+                    const fetchedPrice = await fetchStockPrice(formData.ticker);
+                    if (fetchedPrice) {
+                        currentPrice = fetchedPrice;
+                        console.log(`Fetched price: $${currentPrice}`);
+                    } else {
+                        alert(`Konnte Preis für ${formData.ticker} nicht automatisch abrufen.\n\nBitte gib den aktuellen Preis manuell ein!`);
+                        setIsLoading(false);
+                        return;
+                    }
+                }
+
+                const trade = {
+                    ...formData,
+                    avgEntry: parseFloat(formData.avgEntry),
+                    target: formData.target ? parseFloat(formData.target) : null,
+                    currentPrice: currentPrice,
+                    shares: parseInt(formData.shares),
+                    currentReturn: ((currentPrice - parseFloat(formData.avgEntry)) / parseFloat(formData.avgEntry)) * 100,
+                    realizedReturn: formData.status === 'CLOSED' ? ((currentPrice - parseFloat(formData.avgEntry)) / parseFloat(formData.avgEntry)) * 100 : 0
+                };
+
+                onSubmit(trade);
+                
+                // Show success message
+                const successMsg = document.createElement('div');
+                successMsg.className = 'fixed top-4 right-4 bg-emerald-500 text-white px-6 py-3 rounded-lg shadow-lg z-50';
+                successMsg.textContent = `✓ ${formData.ticker} hinzugefügt!`;
+                document.body.appendChild(successMsg);
+                setTimeout(() => successMsg.remove(), 2000);
+                
+                // Reset form for next entry but keep modal open
+                setFormData({
+                    ticker: '',
+                    name: '',
+                    direction: 'LONG',
+                    avgEntry: '',
+                    target: '',
+                    currentPrice: '',
+                    shares: '1',
+                    entryDate: new Date().toISOString().split('T')[0],
+                    status: 'OPEN'
+                });
+                setIsLoading(false);
+            };
+
+            if (!isAdmin) {
+                return (
+                    <div className="fixed inset-0 bg-black/50 backdrop-blur-sm flex items-center justify-center z-50">
+                        <div className="glass-card max-w-md w-full mx-4">
+                            <h2 className="text-2xl font-bold text-white mb-4">Admin Login</h2>
+                            <p className="text-gray-300 mb-6">Enter password to manage trades</p>
+                            
+                            <input
+                                type="password"
+                                value={adminPassword}
+                                onChange={(e) => setAdminPassword(e.target.value)}
+                                placeholder="Password"
+                                className="w-full px-4 py-3 rounded-lg bg-white/10 border border-white/20 text-white mb-4"
+                                onKeyPress={(e) => e.key === 'Enter' && onAdminLogin()}
+                            />
+                            
+                            <div className="flex gap-3">
+                                <button onClick={onAdminLogin} className="btn-primary flex-1">
+                                    Login
+                                </button>
+                                <button onClick={onClose} className="btn-secondary flex-1">
+                                    Cancel
+                                </button>
+                            </div>
+                            
+                            <p className="text-gray-500 text-sm mt-4 text-center">
+                                Default password: wave2025
+                            </p>
+                        </div>
+                    </div>
+                );
+            }
+
+            return (
+                <div className="fixed inset-0 bg-black/50 backdrop-blur-sm flex items-center justify-center z-50 p-4 overflow-y-auto">
+                    <div className="glass-card max-w-2xl w-full my-8">
+                        <h2 className="text-2xl font-bold text-white mb-6">Add New Trade</h2>
+                        
+                        <form onSubmit={handleSubmit}>
+                            <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mb-4">
+                                <div>
+                                    <label className="block text-gray-300 mb-2">Ticker Symbol *</label>
+                                    <input
+                                        type="text"
+                                        required
+                                        value={formData.ticker}
+                                        onChange={(e) => setFormData({...formData, ticker: e.target.value.toUpperCase()})}
+                                        placeholder="z.B. PLTR"
+                                        className="w-full px-4 py-3 rounded-lg bg-white/10 border border-white/20 text-white"
+                                    />
+                                </div>
+                                
+                                <div>
+                                    <label className="block text-gray-300 mb-2">Name *</label>
+                                    <input
+                                        type="text"
+                                        required
+                                        value={formData.name}
+                                        onChange={(e) => setFormData({...formData, name: e.target.value})}
+                                        placeholder="z.B. Palantir"
+                                        className="w-full px-4 py-3 rounded-lg bg-white/10 border border-white/20 text-white"
+                                    />
+                                </div>
+                                
+                                <div>
+                                    <label className="block text-gray-300 mb-2">Entry Date *</label>
+                                    <input
+                                        type="date"
+                                        required
+                                        value={formData.entryDate}
+                                        onChange={(e) => setFormData({...formData, entryDate: e.target.value})}
+                                        className="w-full px-4 py-3 rounded-lg bg-white/10 border border-white/20 text-white"
+                                    />
+                                </div>
+                                
+                                <div>
+                                    <label className="block text-gray-300 mb-2">Number of Shares *</label>
+                                    <input
+                                        type="number"
+                                        required
+                                        value={formData.shares}
+                                        onChange={(e) => setFormData({...formData, shares: e.target.value})}
+                                        placeholder="z.B. 10"
+                                        className="w-full px-4 py-3 rounded-lg bg-white/10 border border-white/20 text-white"
+                                    />
+                                </div>
+                                
+                                <div>
+                                    <label className="block text-gray-300 mb-2">Direction *</label>
+                                    <select
+                                        value={formData.direction}
+                                        onChange={(e) => setFormData({...formData, direction: e.target.value})}
+                                        className="w-full px-4 py-3 rounded-lg bg-white/10 border border-white/20 text-white"
+                                    >
+                                        <option value="LONG">LONG</option>
+                                        <option value="SHORT">SHORT</option>
+                                    </select>
+                                </div>
+                                
+                                <div>
+                                    <label className="block text-gray-300 mb-2">Status *</label>
+                                    <select
+                                        value={formData.status}
+                                        onChange={(e) => setFormData({...formData, status: e.target.value})}
+                                        className="w-full px-4 py-3 rounded-lg bg-white/10 border border-white/20 text-white"
+                                    >
+                                        <option value="OPEN">OPEN</option>
+                                        <option value="CLOSED">CLOSED</option>
+                                    </select>
+                                </div>
+                                
+                                <div>
+                                    <label className="block text-gray-300 mb-2">Entry Preis *</label>
+                                    <input
+                                        type="number"
+                                        step="0.01"
+                                        required
+                                        value={formData.avgEntry}
+                                        onChange={(e) => setFormData({...formData, avgEntry: e.target.value})}
+                                        placeholder="z.B. 51.10"
+                                        className="w-full px-4 py-3 rounded-lg bg-white/10 border border-white/20 text-white"
+                                    />
+                                </div>
+                                
+                                <div>
+                                    <label className="block text-gray-300 mb-2">Target Price (optional)</label>
+                                    <input
+                                        type="number"
+                                        step="0.01"
+                                        value={formData.target}
+                                        onChange={(e) => setFormData({...formData, target: e.target.value})}
+                                        placeholder="z.B. 118.00"
+                                        className="w-full px-4 py-3 rounded-lg bg-white/10 border border-white/20 text-white"
+                                    />
+                                </div>
+                                
+                                <div className="md:col-span-2">
+                                    <label className="block text-gray-300 mb-2">
+                                        Current Price * 
+                                        <span className="text-gray-500 text-xs ml-2">(wird versucht automatisch zu laden)</span>
+                                    </label>
+                                    <input
+                                        type="number"
+                                        step="0.01"
+                                        value={formData.currentPrice}
+                                        onChange={(e) => setFormData({...formData, currentPrice: e.target.value})}
+                                        placeholder="z.B. 103.30 (leer lassen für Auto-Fetch)"
+                                        className="w-full px-4 py-3 rounded-lg bg-white/10 border border-white/20 text-white"
+                                    />
+                                    <p className="text-gray-500 text-xs mt-1">
+                                        Leave empty for auto-fetch. Enter manually if fetch fails.
+                                    </p>
+                                </div>
+                            </div>
+                            
+                            <div className="flex gap-3 mt-6">
+                                <button 
+                                    type="submit" 
+                                    className="btn-primary flex-1"
+                                    disabled={isLoading}
+                                >
+                                    {isLoading ? 'Loading price...' : 'Trade hinzufügen'}
+                                </button>
+                                <button 
+                                    type="button" 
+                                    onClick={onClose} 
+                                    className="btn-secondary flex-1"
+                                    disabled={isLoading}
+                                >
+                                    Done & Close
+                                </button>
+                            </div>
+                            
+                            <p className="text-gray-500 text-sm mt-4 text-center">
+                                Form stays open — add multiple trades in a row!
+                            </p>
+                        </form>
+                    </div>
+                </div>
+            );
+        }
+
+        function App() {
+            const [currentPage, setCurrentPage] = useState('home');
+            const [trades, setTrades] = useState(() => {
+                const saved = localStorage.getItem('wavecountTrades');
+                return saved ? JSON.parse(saved) : [
+                    {
+                        ticker: 'PLTR',
+                        name: 'Palantir',
+                        direction: 'LONG',
+                        avgEntry: 51.10,
+                        target: 118.00,
+                        currentPrice: 103.30,
+                        shares: 10,
+                        entryDate: '2025-01-15',
+                        currentReturn: 102.15,
+                        realizedReturn: 0,
+                        status: 'OPEN'
+                    },
+                    {
+                        ticker: 'NVDA',
+                        name: 'NVIDIA',
+                        direction: 'LONG',
+                        avgEntry: 108.84,
+                        target: 184.20,
+                        currentPrice: 190.08,
+                        shares: 5,
+                        entryDate: '2025-02-01',
+                        currentReturn: 74.63,
+                        realizedReturn: 0,
+                        status: 'OPEN'
+                    },
+                    {
+                        ticker: 'PYPL',
+                        name: 'PayPal',
+                        direction: 'LONG',
+                        avgEntry: 68.01,
+                        target: null,
+                        currentPrice: 60.81,
+                        shares: 15,
+                        entryDate: '2025-01-20',
+                        currentReturn: -10.59,
+                        realizedReturn: 0,
+                        status: 'OPEN'
+                    }
+                ];
+            });
+
+            useEffect(() => {
+                localStorage.setItem('wavecountTrades', JSON.stringify(trades));
+            }, [trades]);
+
+            const addTrade = (trade) => {
+                setTrades([...trades, trade]);
+            };
+
+            const deleteTrade = (index) => {
+                setTrades(trades.filter((_, i) => i !== index));
+            };
+
+            const closeTrade = (index, percent = 100) => {
+                setTrades(prevTrades => {
+                    const trade = prevTrades[index];
+                    if (!trade) return prevTrades;
+
+                    const sharesToClose = Math.round((trade.shares || 1) * percent / 100);
+                    const sharesRemaining = (trade.shares || 1) - sharesToClose;
+
+                    const closedTrade = {
+                        ...trade,
+                        shares: sharesToClose,
+                        status: 'CLOSED',
+                        realizedReturn: trade.currentReturn,
+                        exitDate: new Date().toISOString().split('T')[0],
+                        exitPrice: trade.currentPrice
+                    };
+
+                    if (percent >= 100 || sharesRemaining <= 0) {
+                        // Full close - replace original
+                        return prevTrades.map((t, i) => i === index ? closedTrade : t);
+                    } else {
+                        // Partial close - keep original with reduced shares, add closed slice
+                        const updatedOpen = { ...trade, shares: sharesRemaining };
+                        const result = [...prevTrades];
+                        result[index] = updatedOpen;
+                        result.push(closedTrade);
+                        return result;
+                    }
+                });
+            };
+
+            const updatePrices = (priceUpdates) => {
+                setTrades(prevTrades => 
+                    prevTrades.map(trade => {
+                        if (priceUpdates[trade.ticker]) {
+                            const newPrice = priceUpdates[trade.ticker];
+                            const newReturn = ((newPrice - trade.avgEntry) / trade.avgEntry) * 100;
+                            return {
+                                ...trade,
+                                currentPrice: newPrice,
+                                currentReturn: newReturn
+                            };
+                        }
+                        return trade;
+                    })
+                );
+            };
+
+            return (
+                <>
+                    {currentPage === 'home' && <HomePage onNavigate={setCurrentPage} />}
+                    {currentPage === 'dashboard' && (
+                        <Dashboard 
+                            onNavigate={setCurrentPage} 
+                            trades={trades}
+                            onAddTrade={addTrade}
+                            onUpdatePrices={updatePrices}
+                            onDeleteTrade={deleteTrade}
+                            onCloseTrade={closeTrade}
+                        />
+                    )}
+                </>
+            );
+        }
+
+        ReactDOM.render(<App />, document.getElementById('root'));
+    </script>
+</body>
+</html>
